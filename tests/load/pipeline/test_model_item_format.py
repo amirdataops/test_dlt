@@ -92,6 +92,7 @@ def test_aliased_column(destination_config: DestinationTestConfiguration) -> Non
         # Parse into AST
         parsed = sqlglot.parse_one(query, read=select_dialect)
         # Get first expression in the SELECT statement (e.g "a")
+        query = parsed.sql(select_dialect)
         first_expr = parsed.expressions[0]
         # Clickhouse aliases by default, so special handling is needed
         if isinstance(first_expr, sqlglot.exp.Alias):
@@ -405,3 +406,74 @@ def test_model_writer_without_destination(mocker):
         pipeline.extract(example_table)
     except Exception as e:
         pytest.fail(f"pipeline.extract(example_table) raised an exception: {e}")
+
+
+@pytest.mark.parametrize(
+    "destination_config",
+    destinations_configs(
+        default_sql_configs=True,
+        subset=DESTINATIONS_SUPPORTING_MODEL,
+    ),
+    ids=lambda x: x.name,
+)
+@pytest.mark.parametrize("drop_column", ["_dlt_load_id", "_dlt_id"])
+def test_copying_table_with_dropped_column(
+    destination_config: DestinationTestConfiguration, drop_column: str
+) -> None:
+    """
+    Test copying a table while excluding one of the DLT-injected columns (`_dlt_id` or `_dlt_load_id`),
+    to verify that:
+    - The resulting table contains all expected columns, including dlt ones.
+    - Row counts and model job counts are correct.
+    """
+    #    if drop_column == "_dlt_id" and destination_config.destination_type == "redshift":
+    #        pytest.skip("Redshift doesn't have an in-built UUID generation required for _dlt_id")
+
+    table_suffix = "no_dlt_id" if drop_column == "_dlt_id" else "dlt_id"
+    target_table_name = f"copied_table_{table_suffix}"
+
+    # populate a table with two columns each with 10 items and retrieve dataset
+    pipeline = destination_config.setup_pipeline("test_adding_dlt_load_id", dev_mode=False)
+
+    pipeline.run([{"a": i, "b": i + 1} for i in range(10)], table_name="example_table")
+    dataset = pipeline.dataset()
+    select_dialect = pipeline.destination.capabilities().sqlglot_dialect
+    example_table_columns = dataset.schema.tables["example_table"]["columns"]
+
+    @dlt.resource(name=target_table_name)
+    def copied_table() -> Any:
+        kept_columns = ["a", "b", "_dlt_load_id", "_dlt_id"]
+        kept_columns.remove(drop_column)
+
+        query = dataset["example_table"][kept_columns].limit(5).query()
+        sql_model = SqlModel.from_query_string(query=query, dialect=select_dialect)
+        yield dlt.mark.with_hints(
+            sql_model,
+            hints=make_hints(
+                columns={k: v for k, v in example_table_columns.items() if k != drop_column}
+            ),
+        )
+
+    pipeline.run([copied_table()])
+
+    # Validate row counts for all tables
+    assert load_table_counts(pipeline, target_table_name, "example_table") == {
+        target_table_name: 5,
+        "example_table": 10,
+    }
+
+    assert target_table_name in pipeline.default_schema.tables
+    assert "example_table" in pipeline.default_schema.tables
+
+    # Validate columns for the table
+    assert set(pipeline.default_schema.tables[target_table_name]["columns"].keys()) == {
+        "a",
+        "b",
+        "_dlt_id",
+        "_dlt_load_id",
+    }
+
+    # Validate that each table has exactly one model job
+    assert count_job_types(pipeline) == {
+        target_table_name: {"model": 1},
+    }
