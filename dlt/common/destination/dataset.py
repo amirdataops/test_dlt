@@ -10,6 +10,7 @@ from typing import (
     Tuple,
     AnyStr,
     overload,
+    runtime_checkable,
 )
 
 from dlt.common.typing import Self, Generic, TypeVar
@@ -28,15 +29,22 @@ else:
     IbisBackend = Any
 
 
+@runtime_checkable
 class SupportsReadableRelation(Protocol):
     """A readable relation retrieved from a destination that supports it"""
 
     columns_schema: TTableSchemaColumns
     """Known dlt table columns for this relation"""
 
-    def query(self) -> Any: ...
+    def query(self) -> Any:
+        """Represents relation as a query, currently always SQL"""
+        ...
 
-    """Represents relation as an query, currently always SQL"""
+    # TODO think for a better name that matches the type `TTableSchemaColumns`
+    # `compute_table_columns_schema()` ?
+    def compute_columns_schema(self, **kwargs: Any) -> TTableSchemaColumns:
+        """Return the expected dlt schema of the execution result of self.query()"""
+        ...
 
     def df(self, chunk_size: int = None) -> Optional[DataFrame]:
         """Fetches the results as data frame. For large queries the results may be chunked
