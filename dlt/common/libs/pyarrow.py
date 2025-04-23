@@ -419,8 +419,7 @@ def should_normalize_arrow_schema(
     schema: pyarrow.Schema,
     columns: TTableSchemaColumns,
     naming: NamingConvention,
-    add_load_id: bool = False,
-) -> Tuple[bool, Mapping[str, str], Dict[str, str], Dict[str, bool], bool, TTableSchemaColumns]:
+) -> Tuple[bool, Mapping[str, str], Dict[str, str], Dict[str, bool], TTableSchemaColumns]:
     """Figure out if any of the normalization steps must be executed. This prevents
     from rewriting arrow tables when no changes are needed. Refer to `normalize_py_arrow_item`
     for a list of normalizations. Note that `column` must be already normalized.
@@ -441,16 +440,6 @@ def should_normalize_arrow_schema(
     dlt_id_col = naming.normalize_identifier(C_DLT_ID)
     dlt_columns = {dlt_load_id_col, dlt_id_col}
 
-    # Do we need to add a load id column?
-    if add_load_id and dlt_load_id_col in columns:
-        try:
-            schema.field(dlt_load_id_col)
-            needs_load_id = False
-        except KeyError:
-            needs_load_id = True
-    else:
-        needs_load_id = False
-
     # remove all columns that are dlt columns but are not present in arrow schema. we do not want to add such columns
     # that should happen in the normalizer
     columns = {
@@ -461,16 +450,13 @@ def should_normalize_arrow_schema(
 
     # check if nothing to rename
     skip_normalize = (
-        (list(rename_mapping.keys()) == list(rename_mapping.values()) == list(columns.keys()))
-        and not nullable_updates
-        and not needs_load_id
-    )
+        list(rename_mapping.keys()) == list(rename_mapping.values()) == list(columns.keys())
+    ) and not nullable_updates
     return (
         not skip_normalize,
         rename_mapping,
         rev_mapping,
         nullable_updates,
-        needs_load_id,
         columns,
     )
 
@@ -480,7 +466,6 @@ def normalize_py_arrow_item(
     columns: TTableSchemaColumns,
     naming: NamingConvention,
     caps: DestinationCapabilitiesContext,
-    load_id: Optional[str] = None,
 ) -> TAnyArrowItem:
     """Normalize arrow `item` schema according to the `columns`. Note that
     columns must be already normalized.
@@ -489,11 +474,10 @@ def normalize_py_arrow_item(
     2. arrows columns will be reordered according to `columns`
     3. empty columns will be inserted if they are missing, types will be generated using `caps`
     4. arrow columns with different nullability than corresponding schema columns will be updated
-    5. Add `_dlt_load_id` column if it is missing and `load_id` is provided
     """
     schema = item.schema
-    should_normalize, rename_mapping, rev_mapping, nullable_updates, needs_load_id, columns = (
-        should_normalize_arrow_schema(schema, columns, naming, load_id is not None)
+    should_normalize, rename_mapping, rev_mapping, nullable_updates, columns = (
+        should_normalize_arrow_schema(schema, columns, naming)
     )
     if not should_normalize:
         return item
@@ -529,18 +513,6 @@ def normalize_py_arrow_item(
         # use renamed field
         new_fields.append(schema.field(idx).with_name(column_name))
         new_columns.append(item.column(idx))
-
-    if needs_load_id and load_id:
-        # Storage efficient type for a column with constant value
-        load_id_type = pyarrow.dictionary(pyarrow.int8(), pyarrow.string())
-        new_fields.append(
-            pyarrow.field(
-                naming.normalize_identifier(C_DLT_LOAD_ID),
-                load_id_type,
-                nullable=False,
-            )
-        )
-        new_columns.append(pyarrow.array([load_id] * item.num_rows, type=load_id_type))
 
     # create desired type
     return item.__class__.from_arrays(new_columns, schema=pyarrow.schema(new_fields))
@@ -670,10 +642,20 @@ def add_constant_column(
         value: The value to fill the new column with
         index: The index at which to insert the new column. Defaults to -1 (append)
     """
-    field = pyarrow.field(name, pyarrow.dictionary(pyarrow.int8(), data_type), nullable=nullable)
+    try:
+        from dlt.common.libs.numpy import numpy as np
+    except MissingDependencyException:
+        raise MissingDependencyException(
+            "dlt pyarrow helpers", ["numpy"], "Numpy is required for this pyarrow operation"
+        )
+    dictionary = pyarrow.array([value], type=data_type)
+    indices = pyarrow.array(np.zeros(item.num_rows, dtype="int8"))
+    dict_array = pyarrow.DictionaryArray.from_arrays(indices, dictionary)
+
+    field = pyarrow.field(name, dict_array.type, nullable=nullable)
     if index == -1:
-        return item.append_column(field, pyarrow.array([value] * item.num_rows, type=field.type))
-    return item.add_column(index, field, pyarrow.array([value] * item.num_rows, type=field.type))
+        return item.append_column(field, dict_array)
+    return item.add_column(index, field, dict_array)
 
 
 def pq_stream_with_new_columns(
