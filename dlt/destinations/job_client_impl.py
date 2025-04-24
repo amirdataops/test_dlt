@@ -261,6 +261,8 @@ class SqlJobClientBase(WithSqlClient, JobClientBase, WithStateSync):
         config: DestinationClientConfiguration,
         sql_client: SqlClientBase[TNativeConn],
     ) -> None:
+        self.INFO_TABLES_QUERY_THRESHOLD = config.info_tables_query_threshold
+        """This gives priority to the value in `DestinationClientConfiguration` (if set), and falls back to the class default."""
         # get definitions of the dlt tables, normalize column names and keep for later use
         version_table_ = normalize_table_identifiers(version_table(), schema.naming)
         self.version_table_schema_columns = ", ".join(
@@ -472,6 +474,7 @@ class SqlJobClientBase(WithSqlClient, JobClientBase, WithStateSync):
             f" {self.capabilities.casefold_identifier} produced a name collision."
         )
         # if we have more tables to lookup than a threshold, we prefer to filter them in code
+        print(f'test_print parameter: {self.INFO_TABLES_QUERY_THRESHOLD}')
         if (
             len(name_lookup) > self.INFO_TABLES_QUERY_THRESHOLD
             or len(",".join(folded_table_names)) > self.capabilities.max_query_length / 2

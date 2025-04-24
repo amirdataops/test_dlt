@@ -151,6 +151,11 @@ class PostgresClient(InsertValuesJobClient):
         self.sql_client: Psycopg2SqlClient = sql_client
         self.active_hints = HINT_TO_POSTGRES_ATTR if self.config.create_indexes else {}
         self.type_mapper = self.capabilities.get_type_mapper()
+        # Print configuration during initialization
+        print("\n[PostgresClient Configuration During Initialization]")
+        print(vars(config))  # Print all attributes of the `config` object
+        print("\n[PostgresClient Instance Attributes During Initialization]")
+        print(vars(self))  # Print all attributes of the current instance
 
     def create_load_job(
         self, table: PreparedTableSchema, file_path: str, load_id: str, restore: bool = False
